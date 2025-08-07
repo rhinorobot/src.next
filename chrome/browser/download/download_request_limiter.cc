@@ -5,6 +5,7 @@
 #include "chrome/browser/download/download_request_limiter.h"
 
 #include <iterator>
+#include <memory>
 #include <utility>
 
 #include "base/containers/contains.h"
@@ -59,7 +60,6 @@ DownloadRequestLimiter::DownloadStatus GetDownloadStatusFromSetting(
       return DownloadRequestLimiter::PROMPT_BEFORE_DOWNLOAD;
     case CONTENT_SETTING_SESSION_ONLY:
     case CONTENT_SETTING_NUM_SETTINGS:
-    case CONTENT_SETTING_DETECT_IMPORTANT_CONTENT:
       NOTREACHED();
   }
   NOTREACHED();
@@ -217,7 +217,8 @@ void DownloadRequestLimiter::TabDownloadState::PromptUserForDownload(
     // request in the case that the initiator RFH is already gone.
     permission_request_manager->AddRequest(
         web_contents_->GetPrimaryMainFrame(),
-        new DownloadPermissionRequest(factory_.GetWeakPtr(), request_origin));
+        std::make_unique<DownloadPermissionRequest>(factory_.GetWeakPtr(),
+                                                    request_origin));
   } else {
     // Call CancelOnce() so we don't set the content settings.
     CancelOnce(request_origin);
@@ -398,12 +399,7 @@ void DownloadRequestLimiter::TabDownloadState::SetDownloadStatusAndNotifyImpl(
          (GetDownloadStatusFromSetting(setting) == status))
       << "status " << status << " and setting " << setting
       << " do not correspond to each other";
-  ContentSetting last_setting = GetSettingFromDownloadStatus(status_);
-  DownloadUiStatus last_ui_status = ui_status_;
-  url::Origin last_origin = origin_;
-
   status_ = status;
-  ui_status_ = GetUiStatusFromDownloadStatus(status_, download_seen_);
   origin_ = request_origin;
 
   if (status_ != ALLOW_ONE_DOWNLOAD)
@@ -418,6 +414,11 @@ void DownloadRequestLimiter::TabDownloadState::SetDownloadStatusAndNotifyImpl(
   // result, don't send a notification.
   if (origin_.opaque())
     return;
+
+  ContentSetting last_setting = GetSettingFromDownloadStatus(status_);
+  url::Origin last_origin = origin_;
+  DownloadUiStatus last_ui_status = ui_status_;
+  ui_status_ = GetUiStatusFromDownloadStatus(status_, download_seen_);
 
   // We want to send a notification if the UI status has changed to ensure that
   // the omnibox decoration updates appropriately. This is effectively the same
@@ -448,7 +449,7 @@ bool DownloadRequestLimiter::TabDownloadState::shouldClearDownloadState(
 
 // DownloadRequestLimiter ------------------------------------------------------
 
-DownloadRequestLimiter::DownloadRequestLimiter() {}
+DownloadRequestLimiter::DownloadRequestLimiter() = default;
 
 DownloadRequestLimiter::~DownloadRequestLimiter() {
   // All the tabs should have closed before us, which sends notification and

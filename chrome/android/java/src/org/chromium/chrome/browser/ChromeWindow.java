@@ -13,10 +13,12 @@ import androidx.annotation.VisibleForTesting;
 import org.chromium.base.supplier.Supplier;
 import org.chromium.chrome.browser.compositor.CompositorViewHolder;
 import org.chromium.chrome.browser.keyboard_accessory.ManualFillingComponent;
-import org.chromium.ui.InsetObserver;
+import org.chromium.chrome.browser.ui.browser_window.ChromeAndroidTask;
+import org.chromium.chrome.browser.ui.browser_window.ChromeAndroidTaskTrackerFactory;
 import org.chromium.ui.base.ActivityKeyboardVisibilityDelegate;
 import org.chromium.ui.base.ActivityWindowAndroid;
 import org.chromium.ui.base.IntentRequestTracker;
+import org.chromium.ui.insets.InsetObserver;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 
 import java.lang.ref.WeakReference;
@@ -61,7 +63,8 @@ public class ChromeWindow extends ActivityWindowAndroid {
                 compositorViewHolderSupplier,
                 modalDialogManagerSupplier,
                 sKeyboardVisibilityDelegateFactory.create(
-                        new WeakReference<Activity>(activity), manualFillingComponentSupplier),
+                        new WeakReference<>(activity), manualFillingComponentSupplier),
+                /* activityTopResumedSupported= */ true,
                 intentRequestTracker,
                 insetObserver);
     }
@@ -80,17 +83,38 @@ public class ChromeWindow extends ActivityWindowAndroid {
             @NonNull Supplier<CompositorViewHolder> compositorViewHolderSupplier,
             @NonNull Supplier<ModalDialogManager> modalDialogManagerSupplier,
             @NonNull ActivityKeyboardVisibilityDelegate activityKeyboardVisibilityDelegate,
+            boolean activityTopResumedSupported,
             IntentRequestTracker intentRequestTracker,
             @NonNull InsetObserver insetObserver) {
         super(
                 activity,
                 /* listenToActivityState= */ true,
                 activityKeyboardVisibilityDelegate,
+                activityTopResumedSupported,
                 intentRequestTracker,
-                insetObserver);
+                insetObserver,
+                /* trackOcclusion= */ true);
         assert insetObserver != null;
         mCompositorViewHolderSupplier = compositorViewHolderSupplier;
         mModalDialogManagerSupplier = modalDialogManagerSupplier;
+    }
+
+    @Override
+    public void destroy() {
+        clearActivityWindowAndroidFromChromeAndroidTask();
+
+        // It's not 100% correct to destroy the ChromeAndroidTask here as a ChromeAndroidTask
+        // is meant to track an Android Task, but a ChromeWindow is associated with a
+        // ChromeActivity.
+        //
+        // However, as of July 22, 2025, Android framework doesn't provide an API that listens for
+        // Task removal, so we need to destroy the ChromeAndroidTask here as a workaround.
+        //
+        // In the future, we can register a Task listener when a ChromeAndroidTask is created, then
+        // destroy it when notified of the Task removal.
+        destroyChromeAndroidTask();
+
+        super.destroy();
     }
 
     @Override
@@ -115,5 +139,32 @@ public class ChromeWindow extends ActivityWindowAndroid {
     @VisibleForTesting
     public static void resetKeyboardVisibilityDelegateFactory() {
         setKeyboardVisibilityDelegateFactory(ChromeKeyboardVisibilityDelegate::new);
+    }
+
+    /** See {@link ChromeAndroidTask#clearActivityWindowAndroid()}. */
+    private void clearActivityWindowAndroidFromChromeAndroidTask() {
+        var chromeAndroidTaskTracker = ChromeAndroidTaskTrackerFactory.getInstance();
+        if (chromeAndroidTaskTracker == null) {
+            return;
+        }
+
+        var chromeAndroidTask = chromeAndroidTaskTracker.get(getTaskId());
+        if (chromeAndroidTask != null) {
+            chromeAndroidTask.clearActivityWindowAndroid();
+        }
+    }
+
+    private void destroyChromeAndroidTask() {
+        var chromeAndroidTaskTracker = ChromeAndroidTaskTrackerFactory.getInstance();
+        if (chromeAndroidTaskTracker != null) {
+            chromeAndroidTaskTracker.remove(getTaskId());
+        }
+    }
+
+    private int getTaskId() {
+        Activity activity = getActivity().get();
+        assert activity != null;
+
+        return activity.getTaskId();
     }
 }

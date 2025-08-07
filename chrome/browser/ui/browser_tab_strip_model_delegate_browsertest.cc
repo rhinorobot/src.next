@@ -6,9 +6,11 @@
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_list.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/saved_tab_group_utils.h"
+#include "chrome/browser/ui/tabs/split_tab_metrics.h"
 #include "chrome/browser/ui/tabs/tab_group_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_utils.h"
+#include "chrome/browser/ui/ui_features.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/saved_tab_groups/public/features.h"
@@ -220,30 +222,8 @@ IN_PROC_BROWSER_TEST_F(BrowserTabStripModelDelegateWithEmbeddedServerTest,
   VerifyMute(incognito_browser, /*isMuted=*/false);
 }
 
-class BrowserTabStripModelDelegateVariantTest
-    : public BrowserTabStripModelDelegateTest,
-      public testing::WithParamInterface<bool> {
- public:
-  BrowserTabStripModelDelegateVariantTest() {
-    std::vector<base::test::FeatureRef> saved_tab_group_features = {
-        tab_groups::kTabGroupsSaveV2,
-        tab_groups::kTabGroupsSaveUIUpdate,
-    };
-    if (IsSavedTabGroupsV2()) {
-      feature_list_.InitWithFeatures(saved_tab_group_features, {});
-    } else {
-      feature_list_.InitWithFeatures({}, saved_tab_group_features);
-    }
-  }
-
-  bool IsSavedTabGroupsV2() { return GetParam(); }
-
- private:
-  base::test::ScopedFeatureList feature_list_;
-};
-
 // Tests that bulk actions will close tab groups without destruction.
-IN_PROC_BROWSER_TEST_P(BrowserTabStripModelDelegateVariantTest,
+IN_PROC_BROWSER_TEST_F(BrowserTabStripModelDelegateTest,
                        BulkCloseToRightWithTabGroups) {
   std::unique_ptr<TabStripModelDelegate> delegate =
       std::make_unique<BrowserTabStripModelDelegate>(browser());
@@ -274,13 +254,11 @@ IN_PROC_BROWSER_TEST_P(BrowserTabStripModelDelegateVariantTest,
       browser()->profile());
   EXPECT_NE(sync_service, nullptr);
 
-  if (IsSavedTabGroupsV2()) {
-    auto groups = sync_service->GetAllGroups();
-    EXPECT_EQ(groups.size(), 2u);
-    for (auto group : groups) {
-      // Group is open
-      EXPECT_TRUE(group.local_group_id().has_value());
-    }
+  auto groups = sync_service->GetAllGroups();
+  EXPECT_EQ(groups.size(), 2u);
+  for (auto group : groups) {
+    // Group is open
+    EXPECT_TRUE(group.local_group_id().has_value());
   }
 
   // Execute command on first tab to close all tabs to the right.
@@ -294,17 +272,15 @@ IN_PROC_BROWSER_TEST_P(BrowserTabStripModelDelegateVariantTest,
   EXPECT_EQ(browser()->tab_strip_model()->group_model()->ListTabGroups().size(),
             0u);
 
-  if (IsSavedTabGroupsV2()) {
-    auto groups = sync_service->GetAllGroups();
-    EXPECT_EQ(groups.size(), 2u);
-    for (auto group : groups) {
-      // Group is not open
-      EXPECT_FALSE(group.local_group_id().has_value());
-    }
+  groups = sync_service->GetAllGroups();
+  EXPECT_EQ(groups.size(), 2u);
+  for (auto group : groups) {
+    // Group is not open
+    EXPECT_FALSE(group.local_group_id().has_value());
   }
 }
 
-IN_PROC_BROWSER_TEST_P(BrowserTabStripModelDelegateVariantTest,
+IN_PROC_BROWSER_TEST_F(BrowserTabStripModelDelegateTest,
                        BulkCloseOtherWithTabGroups) {
   std::unique_ptr<TabStripModelDelegate> delegate =
       std::make_unique<BrowserTabStripModelDelegate>(browser());
@@ -335,13 +311,11 @@ IN_PROC_BROWSER_TEST_P(BrowserTabStripModelDelegateVariantTest,
       browser()->profile());
   EXPECT_NE(sync_service, nullptr);
 
-  if (IsSavedTabGroupsV2()) {
-    auto groups = sync_service->GetAllGroups();
-    EXPECT_EQ(groups.size(), 2u);
-    for (auto group : groups) {
-      // Group is open
-      EXPECT_TRUE(group.local_group_id().has_value());
-    }
+  auto groups = sync_service->GetAllGroups();
+  EXPECT_EQ(groups.size(), 2u);
+  for (auto group : groups) {
+    // Group is open
+    EXPECT_TRUE(group.local_group_id().has_value());
   }
 
   // Execute command on first tab to close all tabs to the right.
@@ -355,18 +329,87 @@ IN_PROC_BROWSER_TEST_P(BrowserTabStripModelDelegateVariantTest,
   EXPECT_EQ(browser()->tab_strip_model()->group_model()->ListTabGroups().size(),
             1u);
 
-  if (IsSavedTabGroupsV2()) {
-    auto groups = sync_service->GetAllGroups();
-    EXPECT_EQ(groups.size(), 2u);
-    // Other group is not open
-    EXPECT_FALSE(groups.at(0).local_group_id().has_value());
-    // Current group is open
-    EXPECT_TRUE(groups.at(1).local_group_id().has_value());
-  }
+  groups = sync_service->GetAllGroups();
+  EXPECT_EQ(groups.size(), 2u);
+  // Other group is not open
+  EXPECT_FALSE(groups.at(0).local_group_id().has_value());
+  // Current group is open
+  EXPECT_TRUE(groups.at(1).local_group_id().has_value());
 }
 
-INSTANTIATE_TEST_SUITE_P(All,
-                         BrowserTabStripModelDelegateVariantTest,
-                         testing::Bool());
+class BrowserTabStripModelDelegateWithSideBySide
+    : public BrowserTabStripModelDelegateTest {
+ public:
+  BrowserTabStripModelDelegateWithSideBySide() {
+    feature_list_.InitWithFeatures({features::kSideBySide}, {});
+  }
+
+ private:
+  base::test::ScopedFeatureList feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(BrowserTabStripModelDelegateWithSideBySide,
+                       NewSplitTabWithActiveTabPinned) {
+  std::unique_ptr<TabStripModelDelegate> delegate =
+      std::make_unique<BrowserTabStripModelDelegate>(browser());
+
+  GURL url1("chrome://about");
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url1));
+
+  browser()->tab_strip_model()->SetTabPinned(0, true);
+  delegate->NewSplitTab({}, split_tabs::SplitTabCreatedSource::kToolbarButton);
+
+  ASSERT_EQ(browser()->tab_strip_model()->count(), 2);
+  ASSERT_TRUE(browser()->tab_strip_model()->IsTabPinned(0));
+  ASSERT_TRUE(browser()->tab_strip_model()->IsTabPinned(1));
+}
+
+IN_PROC_BROWSER_TEST_F(BrowserTabStripModelDelegateWithSideBySide,
+                       NewSplitTabWithActiveTabGroupped) {
+  std::unique_ptr<TabStripModelDelegate> delegate =
+      std::make_unique<BrowserTabStripModelDelegate>(browser());
+
+  GURL url1("chrome://about");
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url1));
+
+  tab_groups::TabGroupId group_id =
+      browser()->tab_strip_model()->AddToNewGroup({0});
+  delegate->NewSplitTab({}, split_tabs::SplitTabCreatedSource::kToolbarButton);
+
+  ASSERT_EQ(browser()->tab_strip_model()->count(), 2);
+  ASSERT_EQ(browser()->tab_strip_model()->GetTabGroupForTab(0).value(),
+            group_id);
+  ASSERT_EQ(browser()->tab_strip_model()->GetTabGroupForTab(1).value(),
+            group_id);
+}
+
+IN_PROC_BROWSER_TEST_F(BrowserTabStripModelDelegateWithSideBySide,
+                       DuplicateSplitTab) {
+  std::unique_ptr<TabStripModelDelegate> delegate =
+      std::make_unique<BrowserTabStripModelDelegate>(browser());
+
+  GURL url1("chrome://about");
+  GURL url2("chrome://version");
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url1));
+  ASSERT_TRUE(AddTabAtIndex(1, url2, ui::PAGE_TRANSITION_LINK));
+
+  delegate->NewSplitTab({0}, split_tabs::SplitTabCreatedSource::kToolbarButton);
+
+  ASSERT_EQ(browser()->tab_strip_model()->count(), 2);
+  std::optional<split_tabs::SplitTabId> split_id1 =
+      browser()->tab_strip_model()->GetSplitForTab(0);
+  ASSERT_TRUE(split_id1.has_value());
+  ASSERT_EQ(browser()->tab_strip_model()->GetSplitForTab(1).value(),
+            split_id1.value());
+
+  delegate->DuplicateSplit(split_id1.value());
+
+  ASSERT_EQ(browser()->tab_strip_model()->count(), 4);
+  std::optional<split_tabs::SplitTabId> split_id2 =
+      browser()->tab_strip_model()->GetSplitForTab(2);
+  ASSERT_TRUE(split_id2.has_value());
+  ASSERT_EQ(browser()->tab_strip_model()->GetSplitForTab(3).value(),
+            split_id2.value());
+}
 
 }  // namespace chrome

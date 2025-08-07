@@ -8,6 +8,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.anyString;
 import static org.mockito.Mockito.argThat;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.eq;
@@ -36,7 +37,6 @@ import org.robolectric.annotation.Implements;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.supplier.Supplier;
 import org.chromium.base.test.BaseRobolectricTestRunner;
-import org.chromium.base.test.util.JniMocker;
 import org.chromium.base.test.util.UserActionTester;
 import org.chromium.chrome.browser.omnibox.R;
 import org.chromium.chrome.browser.omnibox.styles.OmniboxImageSupplier;
@@ -47,6 +47,7 @@ import org.chromium.chrome.browser.share.ShareDelegate;
 import org.chromium.chrome.browser.share.ShareDelegate.ShareOrigin;
 import org.chromium.chrome.browser.tab.SadTab;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.components.dom_distiller.core.DomDistillerUrlUtilsJni;
 import org.chromium.components.omnibox.AutocompleteInput;
 import org.chromium.components.omnibox.AutocompleteMatch;
 import org.chromium.components.omnibox.AutocompleteMatchBuilder;
@@ -77,6 +78,10 @@ public final class EditUrlSuggestionProcessorUnitTest {
     private static final GURL SEARCH_URL_2 = JUnitTestGURLs.SEARCH_2_URL;
     private static final GURL INVALID_ESCAPED_PATH_URL =
             new GURL("https://pl.wikipedia.org/wiki/G%X");
+    private static final GURL CHROME_DISTILLER_URL =
+            new GURL("chrome-distiller://abc123/?url=https://www.originalurl.com/test/path");
+    private static final GURL CHROME_DISTILLER_ORIGINAL_URL =
+            new GURL("https://www.originalurl.com/test/path");
 
     public static final String ESCAPED_PATH_URL_STRING = "https://pl.wikipedia.org/wiki/Gżegżółka";
     public static final GURL ESCAPED_PATH_URL =
@@ -93,7 +98,6 @@ public final class EditUrlSuggestionProcessorUnitTest {
         }
     }
 
-    public @Rule JniMocker mJniMocker = new JniMocker();
     public @Rule MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     private @Mock ShareDelegate mShareDelegate;
@@ -106,17 +110,19 @@ public final class EditUrlSuggestionProcessorUnitTest {
     private @Mock Supplier<ShareDelegate> mShareDelegateSupplier;
     private @Mock UkmRecorder.Natives mUkmRecorderJniMock;
     private @Mock AutocompleteInput mInput;
+    private @Mock DomDistillerUrlUtilsJni mDomDistillerUrlUtilsJni;
 
     // The original (real) ClipboardManager to be restored after a test run.
     private Context mContext;
     private AutocompleteMatch mMatch;
+    private AutocompleteMatch mChromeDistillerMatch;
     private ClipboardManager mOldClipboardManager;
     private EditUrlSuggestionProcessor mProcessor;
     private PropertyModel mModel;
 
     @Before
     public void setUp() {
-        mJniMocker.mock(UkmRecorderJni.TEST_HOOKS, mUkmRecorderJniMock);
+        UkmRecorderJni.setInstanceForTesting(mUkmRecorderJniMock);
 
         mOldClipboardManager =
                 ((ClipboardImpl) Clipboard.getInstance())
@@ -129,6 +135,14 @@ public final class EditUrlSuggestionProcessorUnitTest {
                         .setDisplayText(SEARCH_URL_1.getSpec())
                         .setDescription(MATCH_TITLE)
                         .setUrl(SEARCH_URL_1)
+                        .build();
+
+        mChromeDistillerMatch =
+                new AutocompleteMatchBuilder(OmniboxSuggestionType.URL_WHAT_YOU_TYPED)
+                        .setIsSearch(false)
+                        .setDisplayText(CHROME_DISTILLER_URL.getSpec())
+                        .setDescription(MATCH_TITLE)
+                        .setUrl(CHROME_DISTILLER_URL)
                         .build();
 
         mProcessor =
@@ -145,6 +159,9 @@ public final class EditUrlSuggestionProcessorUnitTest {
         doReturn(SEARCH_URL_1).when(mTab).getUrl();
         doReturn(TAB_TITLE).when(mTab).getTitle();
         doReturn(true).when(mTab).isInitialized();
+        DomDistillerUrlUtilsJni.setInstanceForTesting(mDomDistillerUrlUtilsJni);
+        when(mDomDistillerUrlUtilsJni.getOriginalUrlFromDistillerUrl(anyString()))
+                .thenReturn(SEARCH_URL_1);
 
         mProcessor.onOmniboxSessionStateChange(true);
     }
@@ -171,15 +188,32 @@ public final class EditUrlSuggestionProcessorUnitTest {
 
     @Test
     public void doesProcessSuggestion_acceptMatchingUrlWhatYouTyped() {
+        // URL_WHAT_YOU_TYPED
         assertTrue(mProcessor.doesProcessSuggestion(mMatch, 0));
+
+        // SEARCH_WHAT_YOU_TYPED
+        var match =
+                new AutocompleteMatchBuilder(OmniboxSuggestionType.SEARCH_WHAT_YOU_TYPED)
+                        .setUrl(SEARCH_URL_1)
+                        .build();
+        assertTrue(mProcessor.doesProcessSuggestion(match, 0));
+
         verifyNoMoreInteractions(mSuggestionHost, mShareDelegate, mClipboardManager);
     }
 
     @Test
-    public void
-            doesProcessSuggestion_acceptMatchingUrlWhatYouTypedWhenRetainOmniboxOnFocusDisabled() {
-        OmniboxFeatures.setShouldRetainOmniboxOnFocusForTesting(Boolean.FALSE);
+    public void doesProcessSuggestion_acceptMatchingWhatYouTypedWhenRetainOmniboxOnFocusDisabled() {
+        // URL_WHAT_YOU_TYPED
+        OmniboxFeatures.setShouldRetainOmniboxOnFocusForTesting(false);
         assertTrue(mProcessor.doesProcessSuggestion(mMatch, 0));
+
+        // SEARCH_WHAT_YOU_TYPED
+        var match =
+                new AutocompleteMatchBuilder(OmniboxSuggestionType.SEARCH_WHAT_YOU_TYPED)
+                        .setUrl(SEARCH_URL_1)
+                        .build();
+        assertTrue(mProcessor.doesProcessSuggestion(match, 0));
+
         verifyNoMoreInteractions(mSuggestionHost, mShareDelegate, mClipboardManager);
     }
 
@@ -218,10 +252,10 @@ public final class EditUrlSuggestionProcessorUnitTest {
     }
 
     @Test
-    public void doesProcessSuggestion_rejectSearchWhatYouTyped() {
+    public void doesProcessSuggestion_rejectNonMatchingSearchWhatYouTyped() {
         var match =
                 new AutocompleteMatchBuilder(OmniboxSuggestionType.SEARCH_WHAT_YOU_TYPED)
-                        .setUrl(SEARCH_URL_1)
+                        .setUrl(SEARCH_URL_2)
                         .build();
         // Suggestion should be rejected even though URLs match.
         when(mTab.getUrl()).thenReturn(SEARCH_URL_1);
@@ -231,7 +265,7 @@ public final class EditUrlSuggestionProcessorUnitTest {
 
     @Test
     public void doesProcessSuggestion_rejectMatchWhenRetainOmniboxOnFocusEnabled() {
-        OmniboxFeatures.setShouldRetainOmniboxOnFocusForTesting(Boolean.TRUE);
+        OmniboxFeatures.setShouldRetainOmniboxOnFocusForTesting(true);
         assertFalse(mProcessor.doesProcessSuggestion(mMatch, 0));
         verifyNoMoreInteractions(mSuggestionHost, mShareDelegate, mClipboardManager);
     }
@@ -337,6 +371,33 @@ public final class EditUrlSuggestionProcessorUnitTest {
                         "url",
                         new String[] {"text/x-moz-url", "text/plain"},
                         new ClipData.Item(SEARCH_URL_1.getSpec()));
+        assertEquals(clip.toString(), argument.getValue().toString());
+        verifyNoMoreInteractions(mSuggestionHost, mShareDelegate, mClipboardManager);
+
+        assertEquals(1, monitor.getActionCount("Omnibox.EditUrlSuggestion.Copy"));
+        assertEquals(1, monitor.getActions().size());
+        monitor.tearDown();
+    }
+
+    @Test
+    public void copyButton_click_chromeDistillerUrl() {
+        when(mDomDistillerUrlUtilsJni.getOriginalUrlFromDistillerUrl(anyString()))
+                .thenReturn(CHROME_DISTILLER_ORIGINAL_URL);
+
+        mProcessor.populateModel(mInput, mChromeDistillerMatch, mModel, 0);
+        var monitor = new UserActionTester();
+        mModel.get(BaseSuggestionViewProperties.ACTION_BUTTONS).get(ACTION_COPY).callback.run();
+
+        ArgumentCaptor<ClipData> argument = ArgumentCaptor.forClass(ClipData.class);
+        verify(mClipboardManager, times(1)).setPrimaryClip(argument.capture());
+
+        // ClipData doesn't implement equals, but their string representations matching should be
+        // good enough.
+        ClipData clip =
+                new ClipData(
+                        "url",
+                        new String[] {"text/x-moz-url", "text/plain"},
+                        new ClipData.Item(CHROME_DISTILLER_ORIGINAL_URL.getSpec()));
         assertEquals(clip.toString(), argument.getValue().toString());
         verifyNoMoreInteractions(mSuggestionHost, mShareDelegate, mClipboardManager);
 

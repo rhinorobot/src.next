@@ -90,7 +90,7 @@ public class UrlBarUnitTest {
     private static final int MIN_LENGTH_FOR_TRUNCATION = 100;
 
     private UrlBar mUrlBar;
-    private Paint.FontMetrics mFontMetrics = new Paint.FontMetrics();
+    private final Paint.FontMetrics mFontMetrics = new Paint.FontMetrics();
     public @Rule MockitoRule mockitoRule = MockitoJUnit.rule();
     private @Mock UrlBarDelegate mUrlBarDelegate;
     private @Mock ViewStructure mViewStructure;
@@ -984,6 +984,17 @@ public class UrlBarUnitTest {
         mUrlBar.setLayoutParams(new LayoutParams(123, 123));
         mUrlBar.layout(0, 0, 123, 123);
         verify(mUrlBar).post(mUrlBar.mEnforceMaxTextHeight);
+    }
+
+    @Test
+    public void layout_adjustFontSizeLayoutRequested() {
+        mUrlBar.setLayoutParams(new LayoutParams(123, 123));
+        mUrlBar.layout(0, 0, 123, 123);
+        verify(mUrlBar).post(mUrlBar.mEnforceMaxTextHeight);
+
+        mUrlBar.forceLayout();
+        mUrlBar.enforceMaxTextHeight();
+        verify(mUrlBar, times(2)).post(mUrlBar.mEnforceMaxTextHeight);
     }
 
     @Test

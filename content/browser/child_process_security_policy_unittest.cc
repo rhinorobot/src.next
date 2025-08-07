@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <algorithm>
 #include <set>
 #include <string>
 #include <string_view>
@@ -12,7 +13,6 @@
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/ref_counted.h"
-#include "base/ranges/algorithm.h"
 #include "base/synchronization/waitable_event.h"
 #include "base/test/bind.h"
 #include "base/test/gtest_util.h"
@@ -276,8 +276,8 @@ class ChildProcessSecurityPolicyTest
     GURL key(SiteInfo::GetSiteForOrigin(origin));
     base::AutoLock isolated_origins_lock(p->isolated_origins_lock_);
     auto origins_for_key = p->isolated_origins_[key];
-    return base::ranges::count(origins_for_key, origin,
-                               &IsolatedOriginEntry::origin);
+    return std::ranges::count(origins_for_key, origin,
+                              &IsolatedOriginEntry::origin);
   }
 
   void CheckGetSiteForURL(BrowserContext* context,
@@ -3264,17 +3264,6 @@ TEST_P(ChildProcessSecurityPolicyTest, NoBrowsingInstanceIDs_UnlockedProcess) {
       ChildProcessSecurityPolicyImpl::GetInstance();
   p->SetBrowsingInstanceCleanupDelayForTesting(0);
 
-  // Make sure feature list command-line options are set in a way that forces
-  // default SiteInstance creation on all platforms.
-  base::test::ScopedFeatureList feature_list;
-  feature_list.InitWithFeatures(
-      /* enable */ {features::kProcessSharingWithDefaultSiteInstances},
-      /* disable */ {features::kProcessSharingWithStrictSiteInstances});
-  EXPECT_TRUE(base::FeatureList::IsEnabled(
-      features::kProcessSharingWithDefaultSiteInstances));
-  EXPECT_FALSE(base::FeatureList::IsEnabled(
-      features::kProcessSharingWithStrictSiteInstances));
-
   base::test::ScopedCommandLine scoped_command_line;
   // Disable site isolation so we can get default SiteInstances on all
   // platforms.
@@ -3303,15 +3292,23 @@ TEST_P(ChildProcessSecurityPolicyTest, NoBrowsingInstanceIDs_UnlockedProcess) {
                    /*is_process_used=*/false,
                    ProcessLock::CreateAllowAnySite(
                        StoragePartitionConfig::CreateDefault(&context),
-                       WebExposedIsolationInfo::CreateNonIsolated()));
+                       WebExposedIsolationInfo::CreateNonIsolated(),
+                       /*cross_origin_isolation_key=*/std::nullopt));
 
-    EXPECT_TRUE(foo_instance->IsDefaultSiteInstance());
     EXPECT_TRUE(foo_instance->HasSite());
-    EXPECT_EQ(foo_instance->GetSiteInfo(),
-              SiteInfo::CreateForDefaultSiteInstance(
-                  foo_instance->GetIsolationContext(),
-                  StoragePartitionConfig::CreateDefault(&context),
-                  WebExposedIsolationInfo::CreateNonIsolated()));
+    if (ShouldUseDefaultSiteInstanceGroup()) {
+      EXPECT_EQ(foo_instance->group(),
+                foo_instance->DefaultSiteInstanceGroupForBrowsingInstance());
+      EXPECT_EQ(foo_instance->GetSiteURL(), foo_url);
+    } else {
+      EXPECT_TRUE(foo_instance->IsDefaultSiteInstance());
+      EXPECT_EQ(foo_instance->GetSiteInfo(),
+                SiteInfo::CreateForDefaultSiteInstance(
+                    foo_instance->GetIsolationContext(),
+                    StoragePartitionConfig::CreateDefault(&context),
+                    WebExposedIsolationInfo::CreateNonIsolated(),
+                    /*cross_origin_isolation_key=*/std::nullopt));
+    }
     EXPECT_FALSE(foo_instance->RequiresDedicatedProcess());
   }
   // At this point foo_instance has gone away, and all BrowsingInstanceIDs
@@ -3346,7 +3343,8 @@ TEST_P(ChildProcessSecurityPolicyTest, CannotLockUsedProcessToSite) {
                  /*is_process_used=*/false,
                  ProcessLock::CreateAllowAnySite(
                      StoragePartitionConfig::CreateDefault(&context),
-                     WebExposedIsolationInfo::CreateNonIsolated()));
+                     WebExposedIsolationInfo::CreateNonIsolated(),
+                     /*cross_origin_isolation_key=*/std::nullopt));
   EXPECT_TRUE(p->GetProcessLock(kRendererID).allows_any_site());
   EXPECT_FALSE(p->GetProcessLock(kRendererID).is_locked_to_site());
 
@@ -3362,6 +3360,55 @@ TEST_P(ChildProcessSecurityPolicyTest, CannotLockUsedProcessToSite) {
 
   // We need to remove it otherwise other tests may fail.
   p->Remove(kRendererID);
+}
+
+// Test that
+// ChildProcessSecurityPolicyImpl::AddV8OptimizationDisabledStateForOrigin()
+// ignores opaque origins.
+TEST_P(ChildProcessSecurityPolicyTest,
+       AddV8OptimizationDisabledStateForOpaqueOrigin) {
+  ChildProcessSecurityPolicyImpl* p =
+      ChildProcessSecurityPolicyImpl::GetInstance();
+  BrowsingInstanceId browsing_instance_id =
+      SiteInstanceImpl::NextBrowsingInstanceId();
+  url::Origin opaque_origin;
+
+  p->AddV8OptimizationDisabledStateForOrigin(
+      browsing_instance_id, opaque_origin,
+      /*are_v8_optimizations_disabled=*/false);
+  std::optional<bool> are_v8_optimizations_disabled_result =
+      p->LookupAreV8OptimizationsDisabled(browsing_instance_id, opaque_origin);
+  EXPECT_FALSE(are_v8_optimizations_disabled_result.has_value());
+}
+
+// Test the behavior of
+// ChildProcessSecurityPolicyImpl::AddV8OptimizationDisabledStateForOrigin()
+// for non-opaque origins.
+TEST_P(ChildProcessSecurityPolicyTest,
+       AddV8OptimizationDisabledStateForNonOpaqueOrigin) {
+  ChildProcessSecurityPolicyImpl* p =
+      ChildProcessSecurityPolicyImpl::GetInstance();
+  BrowsingInstanceId browsing_instance_id =
+      BrowsingInstanceId::FromUnsafeValue(1);
+  url::Origin origin = url::Origin::Create(GURL("https://foo.com"));
+
+  p->AddV8OptimizationDisabledStateForOrigin(
+      browsing_instance_id, origin, /*are_v8_optimizations_disabled=*/false);
+  EXPECT_EQ(std::optional<bool>(false),
+            p->LookupAreV8OptimizationsDisabled(browsing_instance_id, origin));
+
+  EXPECT_FALSE(
+      p->LookupAreV8OptimizationsDisabled(
+           browsing_instance_id, url::Origin::Create(GURL("https://bar.com")))
+          .has_value());
+  EXPECT_FALSE(p->LookupAreV8OptimizationsDisabled(
+                    browsing_instance_id,
+                    url::Origin::Create(GURL("https://subdomain.foo.com")))
+                   .has_value());
+
+  EXPECT_FALSE(p->LookupAreV8OptimizationsDisabled(
+                    BrowsingInstanceId::FromUnsafeValue(2), origin)
+                   .has_value());
 }
 
 INSTANTIATE_TEST_SUITE_P(
