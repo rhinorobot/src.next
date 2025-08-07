@@ -4,13 +4,20 @@
 
 package org.chromium.chrome.browser;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import org.chromium.base.CallbackController;
 import org.chromium.base.metrics.RecordHistogram;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
 import org.chromium.chrome.browser.lifecycle.DestroyObserver;
 import org.chromium.chrome.browser.lifecycle.PauseResumeWithNativeObserver;
 import org.chromium.chrome.browser.lifecycle.StartStopWithNativeObserver;
 import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.tab.TabCreationState;
+import org.chromium.chrome.browser.tab.TabLaunchType;
+import org.chromium.chrome.browser.tab.TabSelectionType;
 import org.chromium.chrome.browser.tabmodel.TabModelSelector;
 import org.chromium.chrome.browser.tabmodel.TabModelSelectorTabModelObserver;
 import org.chromium.chrome.browser.tabmodel.TabModelUtils;
@@ -23,6 +30,7 @@ import java.util.Set;
  * number of tabs used, to the total number of tabs available between ChromeTabbedActivity onResume
  * and onStop.
  */
+@NullMarked
 public class TabUsageTracker
         implements StartStopWithNativeObserver, DestroyObserver, PauseResumeWithNativeObserver {
     private static final String PERCENTAGE_OF_TABS_USED_HISTOGRAM =
@@ -36,9 +44,9 @@ public class TabUsageTracker
     private int mNewlyAddedTabCount;
     private final ActivityLifecycleDispatcher mLifecycleDispatcher;
     private final TabModelSelector mModelSelector;
-    private TabModelSelectorTabModelObserver mTabModelSelectorTabModelObserver;
+    private @Nullable TabModelSelectorTabModelObserver mTabModelSelectorTabModelObserver;
     private boolean mApplicationResumed;
-    private CallbackController mCallbackController = new CallbackController();
+    private final CallbackController mCallbackController = new CallbackController();
 
     /**
      * This method is used to initialize the TabUsageTracker.
@@ -92,6 +100,7 @@ public class TabUsageTracker
         mTabsUsed.clear();
         mNewlyAddedTabCount = 0;
         mInitialTabCount = 0;
+        assumeNonNull(mTabModelSelectorTabModelObserver);
         mTabModelSelectorTabModelObserver.destroy();
         mApplicationResumed = false;
     }
@@ -116,12 +125,15 @@ public class TabUsageTracker
                 new TabModelSelectorTabModelObserver(mModelSelector) {
                     @Override
                     public void didAddTab(
-                            Tab tab, int type, int creationState, boolean markedForSelection) {
+                            Tab tab,
+                            @TabLaunchType int type,
+                            @TabCreationState int creationState,
+                            boolean markedForSelection) {
                         mNewlyAddedTabCount++;
                     }
 
                     @Override
-                    public void didSelectTab(Tab tab, int type, int lastId) {
+                    public void didSelectTab(Tab tab, @TabSelectionType int type, int lastId) {
                         mTabsUsed.add(tab.getId());
                     }
                 };
@@ -131,7 +143,8 @@ public class TabUsageTracker
     @Override
     public void onPauseWithNative() {}
 
-    public TabModelSelectorTabModelObserver getTabModelSelectorTabModelObserverForTests() {
+    public @Nullable
+            TabModelSelectorTabModelObserver getTabModelSelectorTabModelObserverForTests() {
         return mTabModelSelectorTabModelObserver;
     }
 }

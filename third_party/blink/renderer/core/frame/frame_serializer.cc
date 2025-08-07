@@ -104,6 +104,7 @@
 #include "third_party/blink/renderer/platform/weborigin/kurl.h"
 #include "third_party/blink/renderer/platform/wtf/hash_set.h"
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
+#include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 #include "third_party/blink/renderer/platform/wtf/text/text_encoding.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
@@ -150,13 +151,8 @@ const char kShadowDelegatesFocusAttributeName[] = "shadowdelegatesfocus";
 using mojom::blink::FormControlType;
 
 KURL MakePseudoUrl(StringView type) {
-  StringBuilder pseudo_sheet_url_builder;
-  pseudo_sheet_url_builder.Append("cid:");
-  pseudo_sheet_url_builder.Append(type);
-  pseudo_sheet_url_builder.Append("-");
-  pseudo_sheet_url_builder.Append(WTF::CreateCanonicalUUIDString());
-  pseudo_sheet_url_builder.Append("@mhtml.blink");
-  return KURL(pseudo_sheet_url_builder.ToString());
+  return KURL(
+      StrCat({"cid:", type, "-", CreateCanonicalUUIDString(), "@mhtml.blink"}));
 }
 
 KURL MakePseudoCSSUrl() {
@@ -819,7 +815,7 @@ class SerializerMarkupAccumulator : public MarkupAccumulator {
     // page.
     auto metadata = std::make_unique<JSONObject>();
     auto custom_elements = std::make_unique<JSONArray>();
-    CustomElementRegistry* custom_registry = CustomElement::Registry(document);
+    CustomElementRegistry* custom_registry = document.customElementRegistry();
     if (custom_registry) {
       for (const AtomicString& name : custom_registry->DefinedNames()) {
         CustomElementDefinition* definition =
@@ -1096,10 +1092,8 @@ function main(metadata) {
     // tag.
     return blink::internal::ReplaceAllCaseInsensitive(
         css_text.ToString(), "</style", [](const String& text) {
-          StringBuilder builder;
-          builder.Append("\\3C/");  // \3C = '<'.
-          builder.Append(text.Substring(2));
-          return builder.ReleaseString();
+          // \3C = '<'.
+          return StrCat({"\\3C/", text.Substring(2)});
         });
   }
 
@@ -1165,17 +1159,18 @@ function main(metadata) {
       String text_string = css_text.ToString();
       std::string text;
       if (charset.IsValid()) {
-        WTF::TextEncoding text_encoding(charset);
-        text = text_encoding.Encode(text_string,
-                                    WTF::kCSSEncodedEntitiesForUnencodables);
+        TextEncoding text_encoding(charset);
+        text = text_encoding.Encode(
+            text_string,
+            UnencodableHandling::kCSSEncodedEntitiesForUnencodables);
       } else {
-        text = WTF::UTF8Encoding().Encode(
-            text_string, WTF::kCSSEncodedEntitiesForUnencodables);
+        text = Utf8Encoding().Encode(
+            text_string,
+            UnencodableHandling::kCSSEncodedEntitiesForUnencodables);
       }
 
-      resource_serializer_->AddToResources(
-          String("text/css"), SharedBuffer::Create(text.c_str(), text.length()),
-          url);
+      resource_serializer_->AddToResources(String("text/css"),
+                                           SharedBuffer::Create(text), url);
     }
 
     // Sub resources need to be serialized even if the CSS definition doesn't
@@ -1265,6 +1260,9 @@ function main(metadata) {
       case CSSRule::kLayerStatementRule:
       case CSSRule::kViewTransitionRule:
       case CSSRule::kPositionTryRule:
+      case CSSRule::kFunctionDeclarationsRule:
+      case CSSRule::kFunctionRule:
+      case CSSRule::kCustomMediaRule:
         break;
     }
   }
@@ -1279,10 +1277,8 @@ function main(metadata) {
     // The background-image and list-style-image (for ul or ol) are the CSS
     // properties that make use of images. We iterate to make sure we include
     // any other image properties there might be.
-    unsigned property_count = style_declaration->PropertyCount();
-    for (unsigned i = 0; i < property_count; ++i) {
-      const CSSValue& css_value = style_declaration->PropertyAt(i).Value();
-      RetrieveResourcesForCSSValue(css_value, document);
+    for (const CSSPropertyValue& property : style_declaration->Properties()) {
+      RetrieveResourcesForCSSValue(property.Value(), document);
     }
   }
 
@@ -1371,11 +1367,10 @@ void FrameSerializer::SerializeFrame(
     String text =
         accumulator.SerializeNodes<EditingStrategy>(document, kIncludeNode);
 
-    std::string frame_html =
-        document.Encoding().Encode(text, WTF::kEntitiesForUnencodables);
-    resource_serializer->AddMainResource(
-        document.SuggestedMIMEType(),
-        SharedBuffer::Create(frame_html.c_str(), frame_html.length()), url);
+    std::string frame_html = document.Encoding().Encode(
+        text, UnencodableHandling::kEntitiesForUnencodables);
+    resource_serializer->AddMainResource(document.SuggestedMIMEType(),
+                                         SharedBuffer::Create(frame_html), url);
     resource_serializer->Finish(std::move(callback));
   }
 }
@@ -1405,8 +1400,7 @@ String FrameSerializer::MarkOfTheWebDeclaration(const KURL& url) {
 // static
 String FrameSerializer::GetContentID(Frame* frame) {
   DCHECK(frame);
-  const String& frame_id = frame->GetFrameIdForTracing();
-  return "<frame-" + frame_id + "@mhtml.blink>";
+  return StrCat({"<frame-", frame->GetFrameIdForTracing(), "@mhtml.blink>"});
 }
 
 }  // namespace blink

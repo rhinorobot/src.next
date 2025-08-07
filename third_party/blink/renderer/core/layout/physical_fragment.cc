@@ -2,14 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
+#include <algorithm>
 
-#include "third_party/blink/renderer/core/layout/physical_box_fragment.h"
-
-#include "base/ranges/algorithm.h"
 #include "third_party/blink/renderer/core/dom/document_lifecycle.h"
 #include "third_party/blink/renderer/core/html/shadow/shadow_element_utils.h"
 #include "third_party/blink/renderer/core/layout/block_node.h"
@@ -142,6 +136,10 @@ class FragmentTreeDumper {
             box->HasSelfPaintingLayer()) {
           attributes.push_back("self paint");
         }
+        if (flags_ & PhysicalFragment::DumpBreakInfo &&
+            !box->IsFirstForNode()) {
+          attributes.push_back("resumed");
+        }
       }
       AppendAttributes(attributes);
       has_content = AppendOffsetAndSize(fragment, fragment_offset, has_content);
@@ -150,7 +148,16 @@ class FragmentTreeDumper {
         if (has_content)
           builder_->Append(" ");
         builder_->Append(layout_object->DebugName());
+        has_content = true;
       }
+
+      if (flags_ & PhysicalFragment::DumpBreakInfo) {
+        if (const BlockBreakToken* token = box->GetBreakToken()) {
+          builder_->Append(token->ToString(/*skip_node_info=*/true));
+          has_content = true;
+        }
+      }
+
       builder_->Append("\n");
 
       bool has_fragment_items = false;
@@ -501,8 +508,7 @@ base::span<PhysicalOofPositionedNode>
 PhysicalFragment::OutOfFlowPositionedDescendants() const {
   if (!HasOutOfFlowPositionedDescendants())
     return base::span<PhysicalOofPositionedNode>();
-  return {oof_data_->OofPositionedDescendants().data(),
-          oof_data_->OofPositionedDescendants().size()};
+  return oof_data_->OofPositionedDescendants();
 }
 
 const FragmentedOofData* PhysicalFragment::GetFragmentedOofData() const {
@@ -553,16 +559,15 @@ PhysicalFragment::OofData* PhysicalFragment::OofDataFromBuilder(
       oof_data->OofPositionedDescendants().emplace_back(
           descendant.Node(),
           descendant.static_position.ConvertToPhysical(converter),
-          descendant.requires_content_before_breaking,
-          descendant.is_hidden_for_paint, inline_container);
+          descendant.requires_content_before_breaking, inline_container);
     }
   }
 
-  if (const LogicalAnchorQuery* anchor_query = builder->AnchorQuery()) {
+  if (builder->anchor_query_) {
     if (!oof_data) {
       oof_data = MakeGarbageCollected<OofData>();
     }
-    oof_data->AnchorQuery().SetFromLogical(*anchor_query, converter);
+    oof_data->SetAnchorQuery(builder->anchor_query_);
   }
 
   return oof_data;
@@ -604,8 +609,7 @@ PhysicalFragment::OofData* PhysicalFragment::FragmentedOofDataFromBuilder(
         descendant.Node(),
         descendant.static_position.ConvertToPhysical(
             containing_block_converter),
-        descendant.requires_content_before_breaking,
-        descendant.is_hidden_for_paint, inline_container,
+        descendant.requires_content_before_breaking, inline_container,
         PhysicalContainingBlock(builder, size, containing_block_size,
                                 descendant.containing_block),
         PhysicalContainingBlock(builder, size,
@@ -808,7 +812,7 @@ void PhysicalFragment::TraceAfterDispatch(Visitor* visitor) const {
 base::span<const PhysicalFragmentLink> PhysicalFragment::Children() const {
   if (Type() == kFragmentBox)
     return static_cast<const PhysicalBoxFragment*>(this)->Children();
-  return base::make_span(static_cast<PhysicalFragmentLink*>(nullptr), 0u);
+  return {};
 }
 
 PhysicalFragment::PostLayoutChildLinkList PhysicalFragment::PostLayoutChildren()
@@ -816,7 +820,7 @@ PhysicalFragment::PostLayoutChildLinkList PhysicalFragment::PostLayoutChildren()
   if (Type() == kFragmentBox) {
     return static_cast<const PhysicalBoxFragment*>(this)->PostLayoutChildren();
   }
-  return PostLayoutChildLinkList(0, nullptr);
+  return PostLayoutChildLinkList(base::span<const PhysicalFragmentLink>());
 }
 
 void PhysicalFragment::SetChildrenInvalid() const {
@@ -844,7 +848,7 @@ void PhysicalFragment::AddOutlineRectsForNormalChildren(
       // Don't add |Children()|. If |this| has |FragmentItems|, children are
       // either line box, which we already handled in items, or OOF, which we
       // should ignore.
-      DCHECK(base::ranges::all_of(
+      DCHECK(std::ranges::all_of(
           PostLayoutChildren(), [](const PhysicalFragmentLink& child) {
             return child->IsLineBox() || child->IsOutOfFlowPositioned();
           }));
@@ -990,10 +994,9 @@ void PhysicalFragment::AddOutlineRectsForDescendant(
 
 bool PhysicalFragment::DependsOnPercentageBlockSize(
     const FragmentBuilder& builder) {
-  LayoutInputNode node = builder.node_;
-
-  if (!node || node.IsInline())
+  if (!builder.node_ || builder.node_.IsInline()) {
     return builder.has_descendant_that_depends_on_percentage_block_size_;
+  }
 
   // NOTE: If an element is OOF positioned, and has top/bottom constraints
   // which are percentage based, this function will return false.
@@ -1018,6 +1021,7 @@ bool PhysicalFragment::DependsOnPercentageBlockSize(
   // NOTE(ikilpatrick): For the flex-item case this is potentially too general.
   // We only need to know about if this flex-item has a %-block-size child if
   // the "definiteness" changes, not if the percentage resolution size changes.
+  const BlockNode node = To<BlockNode>(builder.node_);
   if (builder.has_descendant_that_depends_on_percentage_block_size_ &&
       (node.UseParentPercentageResolutionBlockSizeForChildren() ||
        node.IsFlexItem())) {
@@ -1036,7 +1040,14 @@ bool PhysicalFragment::DependsOnPercentageBlockSize(
 
 void PhysicalFragment::OofData::Trace(Visitor* visitor) const {
   visitor->Trace(oof_positioned_descendants_);
-  PhysicalAnchorQuery::Trace(visitor);
+  visitor->Trace(anchor_query_);
+}
+
+PhysicalAnchorQuery& PhysicalFragment::OofData::EnsureAnchorQuery() {
+  if (!anchor_query_) {
+    anchor_query_ = MakeGarbageCollected<PhysicalAnchorQuery>();
+  }
+  return *anchor_query_;
 }
 
 std::ostream& operator<<(std::ostream& out, const PhysicalFragment& fragment) {

@@ -11,6 +11,7 @@
 
 #include "base/containers/flat_set.h"
 #include "base/functional/callback_forward.h"
+#include "base/functional/function_ref.h"
 #include "base/lazy_instance.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/raw_ref.h"
@@ -63,7 +64,8 @@ class BrowserList {
   BrowserList(const BrowserList&) = delete;
   BrowserList& operator=(const BrowserList&) = delete;
 
-  // Returns the last active browser for this list.
+  // TODO(crbug.com/431671448): Prefer `GetLastActiveBrowserWindowInterface()`,
+  // this method is being deprecated.
   Browser* GetLastActive() const;
 
   const_iterator begin() const { return browsers_.begin(); }
@@ -73,6 +75,13 @@ class BrowserList {
   size_t size() const { return browsers_.size(); }
 
   Browser* get(size_t index) const { return browsers_[index]; }
+
+  // Enumerate the current browser and the new browser in-order.
+  void ForEachCurrentAndNewBrowser(
+      base::FunctionRef<void(Browser*)> on_browser);
+
+  // Enumerate the current browser in-order.
+  void ForEachCurrentBrowser(base::FunctionRef<void(Browser*)> on_browser);
 
   // Returns iterated access to list of open browsers ordered by activation. The
   // underlying data structure is a vector and we push_back on recent access so
@@ -84,7 +93,8 @@ class BrowserList {
     return browsers_ordered_by_activation_.rend();
   }
 
-  // Convenience method for iterating over browsers in activation order.
+  // Convenience method for iterating over browsers in activation order. I.e.
+  // the most recently used browser will be at the front of the list.
   // Example:
   // for (Browser* browser : BrowserList::GetInstance()->OrderedByActivation())
   BrowsersOrderedByActivationRange OrderedByActivation() const {

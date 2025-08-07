@@ -85,6 +85,7 @@ class NET_EXPORT HttpStreamFactory {
 
     std::string method;
     NetworkAnonymizationKey network_anonymization_key;
+    MutableNetworkTrafficAnnotationTag traffic_annotation;
 
     // Whether HTTP/1.x can be used. Extracted from
     // UploadDataStream::AllowHTTP1().
@@ -130,7 +131,7 @@ class NET_EXPORT HttpStreamFactory {
       RequestPriority priority,
       const std::vector<SSLConfig::CertAndStatus>& allowed_bad_certs,
       HttpStreamRequest::Delegate* delegate,
-      bool enable_ip_based_pooling,
+      bool enable_ip_based_pooling_for_h2,
       bool enable_alternative_services,
       const NetLogWithSource& net_log);
 
@@ -143,7 +144,7 @@ class NET_EXPORT HttpStreamFactory {
       const std::vector<SSLConfig::CertAndStatus>& allowed_bad_certs,
       HttpStreamRequest::Delegate* delegate,
       WebSocketHandshakeStreamBase::CreateHelper* create_helper,
-      bool enable_ip_based_pooling,
+      bool enable_ip_based_pooling_for_h2,
       bool enable_alternative_services,
       const NetLogWithSource& net_log);
 
@@ -157,7 +158,7 @@ class NET_EXPORT HttpStreamFactory {
       RequestPriority priority,
       const std::vector<SSLConfig::CertAndStatus>& allowed_bad_certs,
       HttpStreamRequest::Delegate* delegate,
-      bool enable_ip_based_pooling,
+      bool enable_ip_based_pooling_for_h2,
       bool enable_alternative_services,
       const NetLogWithSource& net_log);
 
@@ -197,7 +198,7 @@ class NET_EXPORT HttpStreamFactory {
       WebSocketHandshakeStreamBase::CreateHelper* create_helper,
       HttpStreamRequest::StreamType stream_type,
       bool is_websocket,
-      bool enable_ip_based_pooling,
+      bool enable_ip_based_pooling_for_h2,
       bool enable_alternative_services,
       const NetLogWithSource& net_log);
 
